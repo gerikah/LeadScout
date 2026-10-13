@@ -1,5 +1,7 @@
 import express from 'express';
 import { createAuditLimiter, createWebsiteAuditor } from './websiteAudit.js';
+import { createCloudLeadsRouter } from './cloudLeads.js';
+import { createSupabaseServices } from './supabase.js';
 
 const niches = {
   cafe: { label: 'Cafés', conditions: ['["amenity"="cafe"]'] },
@@ -160,6 +162,7 @@ function createNominatimQueue() {
 export function createApp({
   fetchImpl = globalThis.fetch,
   websiteAuditor = createWebsiteAuditor(),
+  supabaseServices = createSupabaseServices(),
   userAgent = process.env.NOMINATIM_USER_AGENT ||
     `LeadScout/1.1 (+https://github.com/gerikah/LeadScout${process.env.NOMINATIM_CONTACT_EMAIL ? `; contact: ${process.env.NOMINATIM_CONTACT_EMAIL}` : ''})`,
   overpassUrl = process.env.OVERPASS_URL || 'https://overpass-api.de/api/interpreter',
@@ -167,31 +170,55 @@ export function createApp({
   const app = express();
   const cache = createCache();
   const timedFetch = createTimedFetch(fetchImpl);
-  const limitSearches = createRateLimiter();
-  const limitWebsiteAudits = createAuditLimiter();
+  const limitSearches = supabaseServices.createSharedRateLimit('search', createRateLimiter());
+  const localAuditLimiter = createAuditLimiter();
+  const limitWebsiteAudits = supabaseServices.createSharedRateLimit('audit', localAuditLimiter);
   const waitForNominatim = createNominatimQueue();
 
   app.disable('x-powered-by');
   app.set('trust proxy', 1);
+  app.use('/api/leads', express.json({ limit: '2mb' }));
   app.use(express.json({ limit: '32kb' }));
-  app.get('/api/health', (req, res) => res.json({ status: 'ok', provider: 'OpenStreetMap Overpass + Nominatim' }));
+  app.get('/api/health', (req, res) => res.json({
+    status: 'ok',
+    provider: 'OpenStreetMap Overpass + Nominatim',
+    authenticationConfigured: supabaseServices.authConfigured,
+    sharedRateLimitingConfigured: supabaseServices.sharedConfigured,
+    rateLimitingMode: supabaseServices.sharedConfigured ? 'database-configured-not-probed' : 'per-instance-fallback',
+  }));
   app.get('/api/niches', (req, res) => res.json(Object.entries(niches).map(([id, value]) => ({ id, label: value.label }))));
-  app.post('/api/audit', limitWebsiteAudits, async (req, res) => {
+  app.get('/api/auth/session', supabaseServices.requireUser, (req, res) => res.json({
+    user: { id: req.supabaseUser.id, email: req.supabaseUser.email || '' },
+  }));
+  app.use('/api/leads', createCloudLeadsRouter(supabaseServices.requireUser));
+  app.post('/api/audit', supabaseServices.optionalUser, limitWebsiteAudits, async (req, res) => {
     const url = req.body?.url;
     if (typeof url !== 'string') return res.status(400).json({ error: 'A website URL is required.' });
 
+    let leaseId = null;
     try {
+      leaseId = await supabaseServices.acquireAuditLease();
+      if (leaseId === '') {
+        res.set('Retry-After', '10');
+        return res.status(503).json({ error: 'Website audit capacity is busy. Please retry shortly.' });
+      }
       return res.json(await websiteAuditor(url));
     } catch (error) {
+      if (error.code === 'PGRST202' || error.code === '42883') {
+        console.error('Shared audit concurrency function is unavailable:', error);
+        return res.status(503).json({ error: 'Shared audit protection is not configured. Apply the Supabase migration before auditing.' });
+      }
       if (error.statusCode === 503) res.set('Retry-After', String(error.retryAfter || 10));
       if (!error.statusCode) console.error('Website audit failed unexpectedly:', error);
       const statusCode = error.statusCode || 500;
       return res.status(statusCode).json({
         error: error.statusCode ? error.message : 'Website audit failed unexpectedly.',
       });
+    } finally {
+      await supabaseServices.releaseAuditLease(leaseId);
     }
   });
-  app.get('/api/search', limitSearches, async (req, res) => {
+  app.get('/api/search', supabaseServices.optionalUser, limitSearches, async (req, res) => {
     const parameters = parseSearchParameters(req.query);
     if (!parameters) return res.status(400).json({ error: 'Choose a valid niche and location.' });
 

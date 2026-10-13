@@ -23,6 +23,15 @@ import {
 import { LeadTable } from './LeadTable.jsx';
 import { enrichLead, exportLeadsToCsv, filterAndSortLeads } from './leadData.js';
 import { createLeadRepository } from './leadRepository.js';
+import { cloudConfigured, supabase } from './supabaseClient.js';
+import {
+  deleteCloudLead,
+  importCloudLeads,
+  loadCloudLeads,
+  saveCloudAudit,
+  saveCloudLead,
+  updateCloudLead,
+} from './cloudRepository.js';
 import './styles.css';
 
 const NICHES = [
@@ -89,6 +98,16 @@ function App() {
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [auditResults, setAuditResults] = useState({});
   const [sidebar, setSidebar] = useState(false);
+  const [session, setSession] = useState(null);
+  const [cloudLeads, setCloudLeads] = useState([]);
+  const [cloudLoading, setCloudLoading] = useState(false);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authMode, setAuthMode] = useState('signin');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importReport, setImportReport] = useState(null);
 
   useEffect(() => {
     if (!repository) {
@@ -106,20 +125,59 @@ function App() {
   }, [repository]);
 
   useEffect(() => {
+    if (!supabase) return undefined;
+    let active = true;
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      if (active) setSession(nextSession);
+    });
+    supabase.auth.getSession().then(({ data, error: sessionError }) => {
+      if (!active) return;
+      if (sessionError) setError(`Authentication session could not be restored: ${sessionError.message}`);
+      setSession(data.session);
+    });
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session) {
+      setCloudLeads([]);
+      setCloudLoading(false);
+      return undefined;
+    }
+    let active = true;
+    setCloudLoading(true);
+    loadCloudLeads(session).then((result) => {
+      if (active) setCloudLeads(result.leads || []);
+    }).catch((cloudError) => {
+      if (active) setError(cloudError.message);
+    }).finally(() => {
+      if (active) setCloudLoading(false);
+    });
+    return () => { active = false; };
+  }, [session?.access_token]);
+
+  useEffect(() => {
     if (!toast) return undefined;
     const timer = window.setTimeout(() => setToast(''), 3_500);
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  const savedLeads = useMemo(() => [
+  const localLeads = useMemo(() => [
     ...stored.leads.map(enrichLead),
     ...Object.values(stored.legacy).map((legacy) => enrichLead({ ...legacy, legacy: true })),
   ], [stored]);
+  const savedLeads = useMemo(
+    () => (session ? cloudLeads.map(enrichLead) : localLeads),
+    [session, cloudLeads, localLeads],
+  );
   const savedIds = useMemo(() => new Set(savedLeads.map((lead) => lead.id)), [savedLeads]);
   const searchLeads = useMemo(
     () => (data?.leads || []).map((lead) => {
-      const saved = stored.leads.find((record) => record.id === lead.id);
-      const legacy = stored.legacy[lead.id];
+      const saved = (session ? cloudLeads : stored.leads).find((record) => record.id === lead.id);
+      const legacy = session ? null : stored.legacy[lead.id];
       return enrichLead({
         ...(saved || {}),
         ...lead,
@@ -127,9 +185,12 @@ function App() {
         status: saved?.status || legacy?.status || 'New',
         notes: saved?.notes || legacy?.notes || '',
         savedAt: saved ? saved.savedAt : legacy?.savedAt || null,
+        cloudId: saved?.cloudId,
+        websiteAudit: saved?.websiteAudit || null,
+        auditHistory: saved?.auditHistory || [],
       });
     }),
-    [data, stored],
+    [data, stored, session, cloudLeads],
   );
   const sourceLeads = (onlySaved ? savedLeads : searchLeads).map((lead) => enrichLead({
     ...lead,
@@ -149,7 +210,7 @@ function App() {
   const pageCount = Math.max(1, Math.ceil(filteredLeads.length / 10));
   const categories = [...new Set(sourceLeads.map((lead) => lead.category).filter(Boolean))].sort();
   const selectedLeads = filteredLeads.filter((lead) => selectedIds.has(lead.id));
-  const legacyCount = Object.keys(stored.legacy).length;
+  const legacyCount = session ? 0 : Object.keys(stored.legacy).length;
 
   useEffect(() => {
     if (page >= pageCount) setPage(Math.max(0, pageCount - 1));
@@ -171,7 +232,9 @@ function App() {
     setOnlySaved(false);
     try {
       const parameters = new URLSearchParams({ niche, location, limit, radius });
-      const response = await fetch(`/api/search?${parameters}`);
+      const response = await fetch(`/api/search?${parameters}`, {
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
+      });
       const result = await response.json().catch(() => null);
       if (!response.ok) throw new Error(result?.error || `Business search failed (${response.status}).`);
       if (!Array.isArray(result?.leads)) throw new Error('Business data provider returned an invalid response.');
@@ -194,7 +257,20 @@ function App() {
     }
   }
 
-  function saveLead(lead) {
+  async function saveLead(lead) {
+    if (session) {
+      try {
+        const response = await saveCloudLead(session, {
+          ...lead,
+          location: lead.location || data?.location || '',
+        });
+        await refreshCloudLeads();
+        setToast(response.imported ? `Lead saved to your cloud account.` : 'This business is already in your cloud leads.');
+      } catch (saveError) {
+        setError(saveError.message);
+      }
+      return;
+    }
     if (!repository) {
       setError('Browser storage is unavailable. This lead could not be saved.');
       return;
@@ -211,7 +287,17 @@ function App() {
     }
   }
 
-  function changeLead(lead, changes) {
+  async function changeLead(lead, changes) {
+    if (session) {
+      try {
+        await updateCloudLead(session, lead.cloudId, changes);
+        await refreshCloudLeads();
+        if (changes.notes !== undefined) setToast('Notes synced.');
+      } catch (updateError) {
+        setError(updateError.message);
+      }
+      return;
+    }
     if (!repository) {
       setError('Browser storage is unavailable. Your changes were not saved.');
       return;
@@ -232,7 +318,10 @@ function App() {
     try {
       const response = await fetch('/api/audit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+        },
         body: JSON.stringify({ url: lead.website }),
       });
       const result = await response.json().catch(() => null);
@@ -242,7 +331,14 @@ function App() {
       }
 
       setAuditResults((current) => ({ ...current, [lead.id]: { result, loading: false, error: '' } }));
-      if (savedIds.has(lead.id)) changeLead(lead, { websiteAudit: result });
+      if (savedIds.has(lead.id)) {
+        if (session) {
+          await saveCloudAudit(session, lead.cloudId, result);
+          await refreshCloudLeads();
+        } else {
+          await changeLead(lead, { websiteAudit: result });
+        }
+      }
       setToast(result.status === 'inconclusive'
         ? `Audit of ${lead.name} was inconclusive; no unknown signals were scored.`
         : `Website audit completed for ${lead.name}.`);
@@ -254,7 +350,21 @@ function App() {
     }
   }
 
-  function saveAudit(lead, websiteAudit) {
+  async function saveAudit(lead, websiteAudit) {
+    if (session) {
+      try {
+        await saveCloudLead(session, {
+          ...lead,
+          websiteAudit,
+          location: lead.location || data?.location || '',
+        });
+        await refreshCloudLeads();
+        setToast(`Lead and website audit synced for ${lead.name}.`);
+      } catch (saveError) {
+        setError(saveError.message);
+      }
+      return;
+    }
     if (!repository) {
       setError('Browser storage is unavailable. The audit result could not be saved.');
       return;
@@ -272,7 +382,79 @@ function App() {
     }
   }
 
-  function removeLead(lead) {
+  async function refreshCloudLeads() {
+    if (!session) return;
+    setCloudLoading(true);
+    try {
+      const result = await loadCloudLeads(session);
+      setCloudLeads(result.leads || []);
+    } finally {
+      setCloudLoading(false);
+    }
+  }
+
+  async function submitAuth(event) {
+    event.preventDefault();
+    if (!supabase) return;
+    setAuthBusy(true);
+    setError('');
+    try {
+      const result = authMode === 'signup'
+        ? await supabase.auth.signUp({ email: authEmail, password: authPassword })
+        : await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword });
+      if (result.error) throw result.error;
+      if (result.data.session) setSession(result.data.session);
+      else if (authMode === 'signup') setToast('Check your email to confirm your account before signing in.');
+      setAuthPassword('');
+    } catch (authError) {
+      setError(authError.message || 'Authentication failed. Please try again.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    if (!supabase) return;
+    const { error: signOutError } = await supabase.auth.signOut();
+    if (signOutError) setError(`Could not sign out: ${signOutError.message}`);
+  }
+
+  async function importLocalLeads() {
+    if (!session) return;
+    const importable = stored.leads;
+    setImportBusy(true);
+    setImportReport(null);
+    try {
+      const totals = { imported: 0, skipped: 0, failed: 0, auditFailures: 0, errors: [] };
+      for (let start = 0; start < importable.length; start += 20) {
+        const report = await importCloudLeads(session, importable.slice(start, start + 20));
+        totals.imported += report.imported;
+        totals.skipped += report.skipped;
+        totals.failed += report.failed;
+        totals.auditFailures += report.auditFailures || 0;
+        totals.errors.push(...(report.errors || []).map((item) => ({ ...item, index: item.index + start })));
+        setImportReport({ ...totals, errors: [...totals.errors] });
+      }
+      setImportReport(totals);
+      await refreshCloudLeads();
+    } catch (importError) {
+      setError(importError.message);
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  async function removeLead(lead) {
+    if (session) {
+      try {
+        await deleteCloudLead(session, lead.cloudId);
+        await refreshCloudLeads();
+        setToast(`${lead.name} removed from cloud leads.`);
+      } catch (removeError) {
+        setError(removeError.message);
+      }
+      return;
+    }
     if (!repository) {
       setError('Browser storage is unavailable. This lead could not be removed.');
       return;
@@ -390,6 +572,25 @@ function App() {
           </button>
           <div className="breadcrumb">Workspace <span>/</span> <b>{onlySaved ? 'Saved leads' : 'Lead explorer'}</b></div>
           <div className="status"><span className="green-dot" /> Open data search</div>
+          {cloudConfigured && (
+            <div className="account-controls">
+              {session ? (
+                <>
+                  <span className="account-email">{session.user.email}</span>
+                  <span className="sync-state">{cloudLoading ? 'Syncing…' : 'Cloud synced'}</span>
+                  {localLeads.length > 0 && <button className="outline" onClick={() => { setImportReport(null); setImportOpen(true); }}>Import local ({stored.leads.length})</button>}
+                  <button className="outline" onClick={signOut}>Sign out</button>
+                </>
+              ) : (
+                <form className="auth-form" onSubmit={submitAuth}>
+                  <input aria-label="Account email" type="email" autoComplete="email" required placeholder="Email" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} />
+                  <input aria-label="Account password" type="password" autoComplete={authMode === 'signup' ? 'new-password' : 'current-password'} minLength={8} required placeholder="Password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} />
+                  <button className="outline" type="submit" disabled={authBusy || storageLoading}>{authBusy ? 'Please wait…' : authMode === 'signup' ? 'Create account' : 'Sign in'}</button>
+                  <button className="auth-switch" type="button" onClick={() => setAuthMode(authMode === 'signup' ? 'signin' : 'signup')}>{authMode === 'signup' ? 'Have an account?' : 'Create account'}</button>
+                </form>
+              )}
+            </div>
+          )}
         </header>
 
         <div className="content">
@@ -457,14 +658,14 @@ function App() {
             <div className="stat"><div className="stat-top"><span>{onlySaved ? 'SAVED LEADS' : 'LEADS FOUND'}</span><Building2 size={19} /></div><strong>{onlySaved ? savedLeads.length : searchLeads.length}</strong><small>{onlySaved ? 'Available across searches' : 'From your latest search'}</small></div>
             <div className="stat"><div className="stat-top"><span>NO LISTED WEBSITE</span><Globe size={19} /></div><strong>{sourceLeads.filter((lead) => !lead.website && !lead.legacy).length}</strong><small>Listing signal, not proof no site exists</small></div>
             <div className="stat"><div className="stat-top"><span>WITH CONTACT INFO</span><MapPin size={18} /></div><strong>{sourceLeads.filter((lead) => lead.phone || lead.email).length}</strong><small>Public phone or email listed</small></div>
-            <div className="stat"><div className="stat-top"><span>SAVED LEADS</span><Bookmark size={18} /></div><strong>{savedLeads.length}</strong><small>{legacyCount ? `${legacyCount} need details restored` : 'Stored in this browser'}</small></div>
+            <div className="stat"><div className="stat-top"><span>SAVED LEADS</span><Bookmark size={18} /></div><strong>{savedLeads.length}</strong><small>{cloudConfigured && !session ? 'Stored in this browser · sign in to sync' : session ? 'Synced to your account' : legacyCount ? `${legacyCount} need details restored` : 'Stored in this browser'}</small></div>
           </div>
 
           <section className="results">
             <div className="result-header">
               <div>
                 <div className="result-title"><h2>{onlySaved ? 'Saved prospects' : 'Business leads'}</h2><span>{filteredLeads.length} results</span></div>
-                <p>{onlySaved ? 'Your saved leads are stored independently of your latest search.' : data ? `Results near ${data.location} · ${new Date(data.fetchedAt).toLocaleString()}` : 'Run a search to discover real businesses in your target area.'}</p>
+                <p>{onlySaved ? session ? 'Your saved leads sync to your account across devices.' : 'Your saved leads are stored independently of your latest search.' : data ? `Results near ${data.location} · ${new Date(data.fetchedAt).toLocaleString()}` : 'Run a search to discover real businesses in your target area.'}</p>
               </div>
               <div className="export-actions">
                 <button className="outline" disabled={!filteredLeads.length} onClick={exportFiltered}><Download size={16} /> Export filtered</button>
@@ -582,6 +783,40 @@ function App() {
           <footer>© 2026 LeadScout · Data © OpenStreetMap contributors · <a href="https://www.openstreetmap.org/copyright" rel="noreferrer" target="_blank">ODbL attribution</a></footer>
         </div>
       </main>
+      {importOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="import-dialog" role="dialog" aria-modal="true" aria-labelledby="import-title">
+            <div className="section-line">
+              <div><h2 id="import-title">Preview local lead import</h2><p>Nothing is removed from this browser. Import is safe to retry; existing cloud leads are skipped.</p></div>
+              <button className="icon-btn" aria-label="Close import preview" onClick={() => setImportOpen(false)}><X size={18} /></button>
+            </div>
+            <div className="import-preview">
+              {localLeads.slice(0, 100).map((lead) => (
+                <div key={lead.id}>
+                  <strong>{lead.name || 'Legacy bookmark'}</strong>
+                  <span>{lead.category || 'No category'} · {lead.status || 'New'} · {lead.websiteAudit ? 'Audit history present' : 'No audit history'}</span>
+                  {lead.notes && <small>{lead.notes}</small>}
+                </div>
+              ))}
+              {localLeads.length > 100 && <p>Showing the first 100 of {localLeads.length} complete records. Imports run in safe batches.</p>}
+              {Object.keys(stored.legacy).length > 0 && <p>{Object.keys(stored.legacy).length} legacy bookmarks contain no complete business details and will remain local, unchanged.</p>}
+            </div>
+            {importReport && (
+              <div className="import-report" role="status">
+                <strong>Import finished</strong>
+                <span>Imported: {importReport.imported} · Skipped as duplicates: {importReport.skipped} · Failed: {importReport.failed} · Audit records failed: {importReport.auditFailures || 0}</span>
+                {importReport.errors?.map((item, index) => <small key={`${item.index}-${index}`}>{item.message}</small>)}
+              </div>
+            )}
+            <div className="import-actions">
+              <button className="outline" onClick={() => setImportOpen(false)}>Keep local records</button>
+              <button className="primary" disabled={importBusy || stored.leads.length === 0} onClick={importLocalLeads}>
+              {importBusy ? 'Importing…' : `Import ${stored.leads.length} complete records`}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
 }

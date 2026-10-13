@@ -50,7 +50,26 @@ Set `NOMINATIM_CONTACT_EMAIL` in the hosting provider's environment settings for
 
 The frontend and API can be deployed together to Vercel. Set the Vercel project root to `leadscout-mvp/leadscout`; Vite builds to `dist`, and the catch-all Node function in `api/[...path].js` serves the existing Express API routes. `vercel.json` configures a 60-second function duration for public provider calls; confirm that the deployment plan allows this limit.
 
-The serverless cache, search/audit IP rate limiters, and audit concurrency limit are process-local and are not shared between Vercel instances. They do not provide a global quota across serverless instances. For higher-volume multi-user production, use a provider with suitable licensing and configure a shared rate-limiting/cache service before increasing search traffic. The browser-local lead store is per browser/device; it is not a multi-device backup or shared team database.
+### Supabase authentication and cloud leads
+
+Supabase configuration is optional for local-only use. To enable accounts and cloud sync:
+
+1. Create a Supabase project and review its current plan limits and pricing before enabling it; this code adds no separate paid provider.
+2. Apply `supabase/migrations/202610130001_phase4_cloud_leads.sql` in the Supabase SQL Editor, or link the project with the Supabase CLI and run `supabase db push`.
+3. Copy the project URL, public anon key, and service-role key from Supabase project settings. Configure `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `VITE_SUPABASE_URL`, and `VITE_SUPABASE_ANON_KEY` in Vercel. Set `SUPABASE_SERVICE_ROLE_KEY` only as a server-side Vercel environment variable; never prefix it with `VITE_`, put its value in source control, or send it to the browser.
+4. For local use, set the same variables in the shell before running the app. Vite reads the `VITE_` variables; the Node server reads the unprefixed server variables. `.env.example` contains empty placeholders and no credentials.
+5. Enable email/password in Supabase Auth. Configure the Site URL and allowed redirect URLs for the local origin and production domain (`https://lead-scout-beta-rosy.vercel.app`). Choose whether email confirmation is required in Auth settings.
+6. Deploy/rebuild after setting Vite variables because the public project URL and anon key are embedded at frontend build time.
+
+The API verifies bearer tokens with Supabase Auth and performs lead operations with the user's JWT and anon key, so PostgreSQL RLS remains enforced. The browser uses only the anon key. Database rows are per-user; `source_id` is the OpenStreetMap business identifier and is unique per user, while each user's lead has a separate UUID. Website audit history is stored in `website_audits`, linked to its lead and user. Local browser records are not deleted when signing in; the **Import local** action previews full local records and imports in retry-safe batches. Incomplete legacy bookmarks stay local. Existing cloud records are skipped rather than overwritten so retries do not replace cloud notes/status edits.
+
+### Shared API limits and production readiness
+
+Applying the migration and setting `SUPABASE_SERVICE_ROLE_KEY` enables shared database-backed request quotas: unauthenticated searches 10/minute and audits 5/minute; authenticated searches 30/minute and audits 10/minute. A shared PostgreSQL lease limits audits to two concurrent requests, with expired leases cleaned up after their 30-second safety window. The service role is used only server-side for the limited rate/concurrency RPC functions; RLS is enabled and the RPC tables are not accessible to browser roles.
+
+If the Supabase shared-limiter configuration is absent, existing process-local caps remain as a fallback and `/api/health` reports `rateLimitingMode: "per-instance-fallback"`; it is not a global limit. With the credentials present, health reports `rateLimitingMode: "database-configured-not-probed"` and `sharedRateLimitingConfigured: true`—configuration alone does not prove the migration/RPC is installed. If an RPC is unavailable, protected limiter checks fail closed with HTTP 503 rather than silently falling back. After applying the migration, verify that search/audit calls pass their limit checks, `/api/health` reports authentication configured, and authenticated CRUD/RLS works with two separate test accounts before announcing cloud sync as ready. This repository's tests validate API authorization paths and migration policy definitions, but they do not connect to your Supabase project; live RLS and deployment behavior require that manual two-account check.
+
+Rollback: disable auth UI by removing `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`, then rebuild and deploy. Browser-local records remain available. Back up the database before schema changes; do not drop the new tables as part of an application rollback if they contain user data. Export per-user leads/audit history through an approved backup before deleting a Supabase project.
 
 ## Data use and limitations
 
@@ -60,4 +79,5 @@ The serverless cache, search/audit IP rate limiters, and audit concurrency limit
 - Nominatim and public Overpass endpoints are shared, rate-limited community services. Search sparingly and follow their usage policies: <https://operations.osmfoundation.org/policies/nominatim/> and <https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances>. Some relation-only business records are not included.
 - Attribution is required: © OpenStreetMap contributors, licensed under ODbL. Database exports can have additional ODbL obligations depending on use: <https://www.openstreetmap.org/copyright>.
 - This is a lead research tool, not a Google Maps scraper. It does not bypass provider restrictions, invent contact data, or send automated outreach.
-- Supabase can replace the local repository through the `load`, `save`, `update`, `remove`, and `restoreLegacy` repository interface; no Supabase credentials or paid services are currently used.
+- Supabase cloud sync requires project credentials and the database migration. It adds no separate paid provider, but Supabase project usage may be subject to plan limits or charges.
+- Once Supabase is configured, authenticated lead operations use the cloud API and RLS-protected PostgreSQL; signed-out users continue to use the browser-local repository.
