@@ -1,39 +1,59 @@
 # LeadScout — Open Data Business Lead Finder
 
-A runnable lead prospecting MVP built with React, Vite, Express and OpenStreetMap. It searches real local business listings, highlights missing website listings, captures publicly contributed phones/emails, tracks your outreach pipeline locally and exports filtered leads to CSV.
+LeadScout is a React, Vite, and Express prospecting app using community-contributed OpenStreetMap data. It discovers public business listings and helps organize saved prospects in a browser-local lead pipeline.
 
-## Start
+## Start locally
 
 Requires Node.js 20+.
 
 ```bash
+cd leadscout-mvp/leadscout
 npm install
 npm run dev
 ```
 
-Open **http://localhost:5173**. The API runs on **http://localhost:3001**.
+Open <http://localhost:5173>. Vite proxies `/api/*` to the Express API on port 3001.
 
-For deployment, host the Express API as a running Node service and the built Vite client (`npm run build`, output `dist/`) as a static site. Configure your hosting proxy so `/api/*` forwards to Express. Vercel static-only hosting will **not** run the server as packaged.
+Run automated tests and the production build:
+
+```bash
+npm test
+npm run build
+```
+
+## Configuration
+
+The search API identifies itself to Nominatim with the LeadScout application and repository in its User-Agent. Optionally configure a contact email for provider correspondence:
+
+```powershell
+$env:NOMINATIM_CONTACT_EMAIL = "you@example.com"
+npm run dev
+```
+
+Set `NOMINATIM_CONTACT_EMAIL` in the hosting provider's environment settings for deployment. `.env.example` documents the variable; the app does not load `.env` files automatically. `NOMINATIM_USER_AGENT` can override the generated User-Agent if a host requires a custom application URL or contact format. `OVERPASS_URL` can select another suitable public Overpass instance.
 
 ## Features
 
-- 9 niche categories and configurable location, radius (1.5–15 km), and maximum results (25–250).
-- Uses Nominatim geocoding and OpenStreetMap's Overpass API, no API key.
-- Shows publicly listed name, approximate OSM address, phone, email, website, and original OSM source link.
-- Deduplicates by name + address / coordinates.
-- Scores opportunities based on missing OSM website/contact fields (not a website quality or speed audit).
-- Filters, searchable and paginated results, saved prospects, outreach status, CSV export.
-- Saves bookmarked records and statuses in the same browser using localStorage. Search results are transient and must be re-searched; use CSV for permanent export.
+- Nine business categories with configurable location, radius (500 m–15 km), and result limit (1–250).
+- Nominatim geocoding and Overpass business listings for mapped nodes and ways, with provider timeouts, a 30-minute in-memory result cache, a 1.1-second minimum between geocoder requests per server instance, and a per-instance limit of 10 searches per client IP per minute.
+- Publicly listed business names, categories, addresses, phones, emails, websites, and OSM source links.
+- Saved business records are stored separately from transient search results and remain available across searches and browser refreshes.
+- Outreach status, notes, website/contact/category/location/score/date filters, sorting, pagination, and CSV export for filtered, all saved, and selected leads.
+- Stable OpenStreetMap element identifiers prevent duplicate saved records.
+- Legacy bookmark IDs and statuses from the previous `leadscout:saved` localStorage format are retained and restored when a matching listing is found in a later search. Since the old format never stored business details or the original save date, those missing fields are explicitly left unavailable until rediscovery.
+- CSV export includes source attribution, transparent score factors, and formula-cell escaping for spreadsheet safety.
 
-## Important limitations
+## Deployment
 
-- OpenStreetMap is community data: **unlisted website ≠ business has no website**. Emails and phones may be absent, out-of-date or wrong.
-- Public Overpass and Nominatim endpoints are shared, rate-limited community services and may fail or time out. Avoid repeated bulk searching or high-volume commercial use. For production, set up your own infrastructure or use a commercial data provider with suitable licensing.
-- Attribution required: © OpenStreetMap contributors, licensed under ODbL. Depending on use, database exports can carry ODbL obligations. See https://www.openstreetmap.org/copyright.
-- This is a lead research tool, **not** a Google Maps scraper. It does not evade provider restrictions, gather private information, or send automated outreach.
-- Opportunity scores are heuristics and deliberately do not claim to identify slow websites, bad design, or verified leads.
-- For sustained usage, configure a valid, descriptive identifying User-Agent and contact address for the geocoding provider in `server/index.js`; the included placeholder must be replaced before public deployment. Follow https://operations.osmfoundation.org/policies/nominatim/.
+The frontend and API can be deployed together to Vercel. Set the Vercel project root to `leadscout-mvp/leadscout`; Vite builds to `dist`, and the catch-all Node function in `api/[...path].js` serves the existing Express API routes. `vercel.json` configures a 60-second function duration for public provider calls; confirm that the deployment plan allows this limit.
 
-## Possible production upgrades
+The serverless cache and IP rate limiter are process-local and are not shared between Vercel instances. They reduce repeated requests within an instance but are not a global traffic quota. For higher-volume multi-user production, use a provider with suitable licensing and configure a shared rate-limiting/cache service before increasing search traffic. The browser-local lead store is per browser/device; it is not a multi-device backup or shared team database.
 
-Supabase user accounts and durable storage; compliant commercial data provider; opt-in/PageSpeed Insights checks of owned or publicly accessible websites; Google Sheets integration via OAuth; team pipeline; responsible email verification and outreach drafting.
+## Data use and limitations
+
+- OpenStreetMap data is community contributed. **A website missing from a listing is not proof the business has no website.** Phone and email details can be missing, outdated, or incorrect; contact details are not independently verified.
+- Opportunity scores are transparent listing-gap signals, not assessments of business quality. No website HTTP checks, mobile checks, PageSpeed tests, or SEO audits are performed yet.
+- Nominatim and public Overpass endpoints are shared, rate-limited community services. Search sparingly and follow their usage policies: <https://operations.osmfoundation.org/policies/nominatim/> and <https://wiki.openstreetmap.org/wiki/Overpass_API#Public_Overpass_API_instances>. Some relation-only business records are not included.
+- Attribution is required: © OpenStreetMap contributors, licensed under ODbL. Database exports can have additional ODbL obligations depending on use: <https://www.openstreetmap.org/copyright>.
+- This is a lead research tool, not a Google Maps scraper. It does not bypass provider restrictions, invent contact data, or send automated outreach.
+- Supabase can replace the local repository through the `load`, `save`, `update`, `remove`, and `restoreLegacy` repository interface; no Supabase credentials or paid services are currently used.

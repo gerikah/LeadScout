@@ -1,11 +1,528 @@
-import React,{useEffect,useMemo,useState} from 'react';import{createRoot}from'react-dom/client';import{Search,MapPin,Globe,Phone,Mail,Download,Target,Building2,SlidersHorizontal,ArrowUpRight,Star,Bookmark,BookmarkCheck,RefreshCw,CheckCircle2,AlertTriangle,ChevronLeft,ChevronRight,Database,PanelLeftClose,LayoutDashboard,ExternalLink,X,Menu}from'lucide-react';import './styles.css';
-const NICHES=[['cafe','Cafés'],['restaurant','Restaurants'],['salon','Beauty salons'],['gym','Gyms & fitness'],['dental','Dental clinics'],['hotel','Hotels'],['retail','Retail shops'],['bakery','Bakeries'],['realestate','Real estate']];
-const initial=()=>{try{return JSON.parse(localStorage.getItem('leadscout:saved')||'{}')}catch{return {}}};
-const csvCell=v=>'"'+String(v??'').replaceAll('"','""')+'"';
-function exportCSV(leads,filename){if(!leads.length)return;const fields=['name','category','address','phone','email','website','opportunity','score','status','source'];const lines=[fields.join(','),...leads.map(l=>fields.map(k=>csvCell(l[k])).join(','))];const blob=new Blob(['\uFEFF'+lines.join('\r\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
-function enrich(l,saved){const score=(!l.website?65:15)+(!l.email?12:0)+(!l.phone?10:0)+(!l.address?5:0);return {...l,score:Math.min(100,score),opportunity:!l.website?'No listed website':!l.email?'No public email listed':'Website listed',status:saved[l.id]?.status||'New'}}
-function App(){const[niche,setNiche]=useState('cafe'),[location,setLocation]=useState('Makati, Metro Manila, Philippines'),[radius,setRadius]=useState('5000'),[limit,setLimit]=useState('100'),[loading,setLoading]=useState(false),[error,setError]=useState(''),[data,setData]=useState(null),[filter,setFilter]=useState('all'),[query,setQuery]=useState(''),[page,setPage]=useState(0),[saved,setSaved]=useState(initial),[onlySaved,setOnlySaved]=useState(false),[sidebar,setSidebar]=useState(false);useEffect(()=>localStorage.setItem('leadscout:saved',JSON.stringify(saved)),[saved]);
-async function search(e){e?.preventDefault();setLoading(true);setError('');setPage(0);setOnlySaved(false);try{const p=new URLSearchParams({niche,location,limit,radius});const r=await fetch('/api/search?'+p);const json=await r.json();if(!r.ok)throw new Error(json.error||'Search failed');setData(json)}catch(e){setError(e.message)}finally{setLoading(false)}}
-const leads=useMemo(()=>(data?.leads||[]).map(l=>enrich(l,saved)),[data,saved]);const visible=useMemo(()=>leads.filter(l=>(!onlySaved||saved[l.id]?.saved)&&(filter==='all'||filter==='no-website'&&!l.website||filter==='has-contact'&&(l.email||l.phone)||filter==='high'&&l.score>=65)&&(!query||[l.name,l.category,l.address,l.website].join(' ').toLowerCase().includes(query.toLowerCase()))).sort((a,b)=>b.score-a.score),[leads,filter,query,onlySaved,saved]);const shown=visible.slice(page*10,(page+1)*10);const pages=Math.max(1,Math.ceil(visible.length/10));function toggleSaved(l){setSaved(o=>({...o,[l.id]:{...o[l.id],saved:!o[l.id]?.saved}}))}function changeStatus(l,val){setSaved(o=>({...o,[l.id]:{...o[l.id],status:val}}))}
-return <div className="app"><aside className={'sidebar '+(sidebar?'show':'')}><div className="brand"><div className="brand-icon"><Target size={23}/></div><div><strong>leadscout<span>.</span></strong><small>BUSINESS INTELLIGENCE</small></div></div><div className="side-label">WORKSPACE</div><button className="nav active" onClick={()=>{setOnlySaved(false);setSidebar(false)}}><LayoutDashboard size={18}/> Lead explorer</button><button className={'nav '+(onlySaved?'active':'')} onClick={()=>{setOnlySaved(true);setPage(0);setSidebar(false)}}><Bookmark size={18}/> Saved leads <span className="navcount">{Object.values(saved).filter(x=>x.saved).length}</span></button><div className="sidebar-end"><div className="info-box"><Database size={18}/><strong>Open data powered</strong><p>Search OpenStreetMap listings. No subscription or Google Maps API key needed.</p></div><div className="side-footer">LEADSCOUT MVP · v1.0</div></div></aside><main className="main"><header className="topbar"><button className="mobilemenu icon-btn" onClick={()=>setSidebar(!sidebar)}><Menu size={21}/></button><div className="breadcrumb">Workspace <span>/</span> <b>{onlySaved?'Saved leads':'Lead explorer'}</b></div><div className="status"><span className="green-dot"/> Open data connected*</div></header><div className="content"><div className="heading"><div><div className="eyebrow"><span className="eyebrow-dot"/> PROSPECTING WORKSPACE</div><h1>Discover your next <em>client.</em></h1><p>Find local businesses, uncover website opportunities, and build a focused outreach pipeline.</p></div><div className="heading-badge"><Star size={16}/> LEAD GENERATION, SIMPLIFIED</div></div><section className="search-card"><div className="section-line"><div className="section-name"><div className="section-icon"><Search size={19}/></div><div><h2>Find businesses</h2><p>Enter a niche and target location to start discovering leads.</p></div></div><span className="source-pill"><span/> OPENSTREETMAP</span></div><form onSubmit={search} className="search-form"><label className="field"><span>BUSINESS NICHE</span><select value={niche} onChange={e=>setNiche(e.target.value)}>{NICHES.map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label><label className="field location-field"><span>LOCATION</span><div className="input-icon"><MapPin size={17}/><input required minLength={2} maxLength={120} value={location} onChange={e=>setLocation(e.target.value)} placeholder="City, region, country"/></div></label><label className="field short"><span>RADIUS</span><select value={radius} onChange={e=>setRadius(e.target.value)}><option value="1500">1.5 km</option><option value="3000">3 km</option><option value="5000">5 km</option><option value="10000">10 km</option><option value="15000">15 km</option></select></label><label className="field short"><span>MAX LEADS</span><select value={limit} onChange={e=>setLimit(e.target.value)}><option>25</option><option>50</option><option>100</option><option>250</option></select></label><button disabled={loading} className="primary search-button" type="submit">{loading?<RefreshCw size={18} className="spin"/>:<Search size={18}/>} {loading?'Searching…':'Find leads'}</button></form><div className="search-foot"><span><CheckCircle2 size={14}/> No API key required</span><span><CheckCircle2 size={14}/> Public business listings</span><span><CheckCircle2 size={14}/> CSV ready</span></div></section>{error&&<div className="error"><AlertTriangle size={18}/><span>{error}</span><button onClick={()=>setError('')} aria-label="Dismiss"><X size={17}/></button></div>}<div className="stats"><div className="stat"><div className="stat-top"><span>LEADS FOUND</span><Building2 size={19}/></div><strong>{leads.length}</strong><small>From your latest search</small></div><div className="stat"><div className="stat-top"><span>NO LISTED WEBSITE</span><Globe size={19}/></div><strong>{leads.filter(l=>!l.website).length}</strong><small>Potential website opportunities</small></div><div className="stat"><div className="stat-top"><span>WITH CONTACT INFO</span><Phone size={18}/></div><strong>{leads.filter(l=>l.phone||l.email).length}</strong><small>Phone or email available</small></div><div className="stat"><div className="stat-top"><span>SAVED LEADS</span><Bookmark size={18}/></div><strong>{Object.values(saved).filter(x=>x.saved).length}</strong><small>Stored in this browser</small></div></div><section className="results"><div className="result-header"><div><div className="result-title"><h2>{onlySaved?'Saved prospects':'Business leads'}</h2><span>{visible.length} results</span></div><p>{data?`Results near ${data.location.split(',').slice(0,2).join(',')} · ${new Date(data.fetchedAt).toLocaleString()}`:'Run a search to discover real businesses in your target area.'}</p></div><button className="outline" disabled={!visible.length} onClick={()=>exportCSV(visible,'leadscout-leads.csv')}><Download size={17}/> Export CSV</button></div><div className="filters"><div className="tabs">{[['all','All leads'],['no-website','No website'],['has-contact','Has contact'],['high','High opportunity']].map(([id,label])=><button key={id} className={filter===id?'selected':''} onClick={()=>{setFilter(id);setPage(0)}}>{label}</button>)}</div><div className="table-search"><Search size={16}/><input placeholder="Search results..." value={query} onChange={e=>{setQuery(e.target.value);setPage(0)}}/></div></div><div className="table-wrap"><table><thead><tr><th>BUSINESS</th><th>CONTACT</th><th>WEBSITE STATUS</th><th>OPPORTUNITY</th><th>PIPELINE</th><th></th></tr></thead><tbody>{shown.map(l=><tr key={l.id}><td><div className="business"><div className="business-avatar">{l.name.slice(0,1).toUpperCase()}</div><div><strong>{l.name}</strong><small>{l.category.replaceAll('_',' ')} {l.address?'· '+l.address:''}</small><a href={l.source} rel="noopener noreferrer" target="_blank">OSM source <ArrowUpRight size={12}/></a></div></div></td><td><div className="contacts">{l.phone?<a href={'tel:'+l.phone}><Phone size={13}/> {l.phone}</a>:<span className="muted"><Phone size={13}/> Not listed</span>}{l.email?<a href={'mailto:'+l.email}><Mail size={13}/> {l.email}</a>:<span className="muted"><Mail size={13}/> Not listed</span>}</div></td><td>{l.website?<a className="website-link" target="_blank" rel="noopener noreferrer" href={l.website}><Globe size={14}/> Website listed <ExternalLink size={12}/></a>:<span className="no-website"><Globe size={14}/> Not listed</span>}</td><td><div className="score"><span className={'score-dot '+(l.score>=65?'hot':'')}/><strong>{l.score}</strong><small>/ 100</small></div><small className="score-note">{l.opportunity}</small></td><td><select className="status-select" value={l.status} onChange={e=>changeStatus(l,e.target.value)}><option>New</option><option>To contact</option><option>Contacted</option><option>Interested</option><option>Closed</option></select></td><td><button title={saved[l.id]?.saved?'Remove from saved':'Save lead'} aria-label="Save lead" className={'bookmark-btn '+(saved[l.id]?.saved?'on':'')} onClick={()=>toggleSaved(l)}>{saved[l.id]?.saved?<BookmarkCheck size={19}/>:<Bookmark size={19}/>}</button></td></tr>)}</tbody></table>{!shown.length&&<div className="empty"><div className="empty-icon"><SlidersHorizontal size={25}/></div><h3>{!data?'Your lead list is waiting':'No matching leads'}</h3><p>{!data?'Search for a business niche and location to populate your prospect list.':'Try adjusting your filters, search query or location.'}</p></div>}</div><div className="table-footer"><span>Showing {visible.length?Math.min(page*10+1,visible.length):0}–{Math.min((page+1)*10,visible.length)} of {visible.length}</span><div><button disabled={page===0} onClick={()=>setPage(p=>p-1)}><ChevronLeft size={17}/></button><span>Page {Math.min(page+1,pages)} of {pages}</span><button disabled={page+1>=pages} onClick={()=>setPage(p=>p+1)}><ChevronRight size={17}/></button></div></div></section><div className="disclaimer"><AlertTriangle size={16}/><p><b>Data quality & scoring:</b> Records come from community-contributed OpenStreetMap data. “No website” means no website is listed in the source, not necessarily that none exists. Scores are heuristic contact/website-opportunity indicators, not website audits. Confirm contact details and honor local outreach/privacy rules. *Provider connectivity is only confirmed after a successful search.</p></div><footer>© 2026 LeadScout · Data © OpenStreetMap contributors · <a target="_blank" rel="noopener noreferrer" href="https://www.openstreetmap.org/copyright">ODbL attribution</a></footer></div></main></div>}
-createRoot(document.getElementById('root')).render(<App/>);
+import React, { useEffect, useMemo, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import {
+  AlertTriangle,
+  Bookmark,
+  Building2,
+  CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
+  Database,
+  Download,
+  Globe,
+  LayoutDashboard,
+  MapPin,
+  Menu,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+  Star,
+  Target,
+  X,
+} from 'lucide-react';
+import { LeadTable } from './LeadTable.jsx';
+import { enrichLead, exportLeadsToCsv, filterAndSortLeads } from './leadData.js';
+import { createLeadRepository } from './leadRepository.js';
+import './styles.css';
+
+const NICHES = [
+  ['cafe', 'Cafés'],
+  ['restaurant', 'Restaurants'],
+  ['salon', 'Beauty salons'],
+  ['gym', 'Gyms & fitness'],
+  ['dental', 'Dental clinics'],
+  ['hotel', 'Hotels'],
+  ['retail', 'Retail shops'],
+  ['bakery', 'Bakeries'],
+  ['realestate', 'Real estate'],
+];
+
+const EMPTY_FILTERS = {
+  search: '',
+  category: '',
+  location: '',
+  website: 'all',
+  contact: 'all',
+  minimumScore: '',
+  maximumScore: '',
+  status: 'all',
+  savedAfter: '',
+  savedBefore: '',
+  sort: 'score-desc',
+};
+
+function downloadCsv(leads, filename) {
+  if (!leads.length) return false;
+  const blob = new Blob([exportLeadsToCsv(leads)], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+  return true;
+}
+
+function App() {
+  const [repository] = useState(() => {
+    try {
+      return createLeadRepository(window.localStorage);
+    } catch {
+      return null;
+    }
+  });
+  const [niche, setNiche] = useState('cafe');
+  const [location, setLocation] = useState('Makati, Metro Manila, Philippines');
+  const [radius, setRadius] = useState('5000');
+  const [limit, setLimit] = useState('100');
+  const [loading, setLoading] = useState(false);
+  const [storageLoading, setStorageLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [toast, setToast] = useState('');
+  const [data, setData] = useState(null);
+  const [filter, setFilter] = useState('all');
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
+  const [page, setPage] = useState(0);
+  const [stored, setStored] = useState({ version: 2, leads: [], legacy: {} });
+  const [onlySaved, setOnlySaved] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [sidebar, setSidebar] = useState(false);
+
+  useEffect(() => {
+    if (!repository) {
+      setError('Browser storage is unavailable. Saved leads cannot be loaded or changed.');
+      setStorageLoading(false);
+      return;
+    }
+    try {
+      setStored(repository.load());
+    } catch (storageError) {
+      setError(storageError.message);
+    } finally {
+      setStorageLoading(false);
+    }
+  }, [repository]);
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timer = window.setTimeout(() => setToast(''), 3_500);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const savedLeads = useMemo(() => [
+    ...stored.leads.map(enrichLead),
+    ...Object.values(stored.legacy).map((legacy) => enrichLead({ ...legacy, legacy: true })),
+  ], [stored]);
+  const savedIds = useMemo(() => new Set(savedLeads.map((lead) => lead.id)), [savedLeads]);
+  const searchLeads = useMemo(
+    () => (data?.leads || []).map((lead) => {
+      const saved = stored.leads.find((record) => record.id === lead.id);
+      const legacy = stored.legacy[lead.id];
+      return enrichLead({
+        ...(saved || {}),
+        ...lead,
+        location: saved?.location || data.location,
+        status: saved?.status || legacy?.status || 'New',
+        notes: saved?.notes || legacy?.notes || '',
+        savedAt: saved ? saved.savedAt : legacy?.savedAt || null,
+      });
+    }),
+    [data, stored],
+  );
+  const sourceLeads = onlySaved ? savedLeads : searchLeads;
+  const filteredLeads = useMemo(() => {
+    let results = filterAndSortLeads(sourceLeads, filters);
+    if (!onlySaved) {
+      if (filter === 'no-website') results = results.filter((lead) => !lead.website);
+      if (filter === 'has-contact') results = results.filter((lead) => lead.email || lead.phone);
+      if (filter === 'high') results = results.filter((lead) => lead.score >= 65);
+    }
+    return results;
+  }, [sourceLeads, filters, filter, onlySaved]);
+  const shownLeads = filteredLeads.slice(page * 10, (page + 1) * 10);
+  const pageCount = Math.max(1, Math.ceil(filteredLeads.length / 10));
+  const categories = [...new Set(sourceLeads.map((lead) => lead.category).filter(Boolean))].sort();
+  const selectedLeads = filteredLeads.filter((lead) => selectedIds.has(lead.id));
+  const legacyCount = Object.keys(stored.legacy).length;
+
+  useEffect(() => {
+    if (page >= pageCount) setPage(Math.max(0, pageCount - 1));
+  }, [page, pageCount]);
+
+  function updateStored(next) {
+    if (!next) return false;
+    setStored(next);
+    setError('');
+    return true;
+  }
+
+  async function search(event) {
+    event?.preventDefault();
+    setLoading(true);
+    setError('');
+    setPage(0);
+    setSelectedIds(new Set());
+    setOnlySaved(false);
+    try {
+      const parameters = new URLSearchParams({ niche, location, limit, radius });
+      const response = await fetch(`/api/search?${parameters}`);
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(result?.error || `Business search failed (${response.status}).`);
+      if (!Array.isArray(result?.leads)) throw new Error('Business data provider returned an invalid response.');
+      setData(result);
+      if (repository) {
+        try {
+          updateStored(repository.restoreLegacy(result.leads.map((lead) => ({
+            ...lead,
+            location: result.location,
+          }))));
+        } catch (storageError) {
+          setError(storageError.message);
+        }
+      }
+      setToast(`${result.leads.length} businesses found. Save prospects to keep them.`);
+    } catch (searchError) {
+      setError(searchError.message || 'Search failed. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  function saveLead(lead) {
+    if (!repository) {
+      setError('Browser storage is unavailable. This lead could not be saved.');
+      return;
+    }
+    try {
+      const nextLead = repository.save({
+        ...lead,
+        location: lead.location || data?.location || '',
+      });
+      updateStored(repository.load());
+      setToast(savedIds.has(nextLead.id) ? 'Saved lead updated with source listing details.' : 'Lead saved with full business details.');
+    } catch (storageError) {
+      setError(storageError.message);
+    }
+  }
+
+  function changeLead(lead, changes) {
+    if (!repository) {
+      setError('Browser storage is unavailable. Your changes were not saved.');
+      return;
+    }
+    try {
+      updateStored(repository.update(lead.id, changes));
+      if (changes.notes !== undefined) setToast('Notes saved.');
+    } catch (storageError) {
+      setError(storageError.message);
+    }
+  }
+
+  function removeLead(lead) {
+    if (!repository) {
+      setError('Browser storage is unavailable. This lead could not be removed.');
+      return;
+    }
+    try {
+      updateStored(repository.remove(lead.id));
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        next.delete(lead.id);
+        return next;
+      });
+      setToast(lead.name ? `${lead.name} removed from saved leads.` : 'Legacy bookmark removed.');
+    } catch (storageError) {
+      setError(storageError.message);
+    }
+  }
+
+  function toggleSelected(id) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAll(leads, currentlySelected) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      for (const lead of leads) {
+        if (currentlySelected) next.delete(lead.id);
+        else next.add(lead.id);
+      }
+      return next;
+    });
+  }
+
+  function exportFiltered() {
+    exportRecords(
+      filteredLeads,
+      onlySaved ? 'leadscout-filtered-saved-leads.csv' : 'leadscout-filtered-search-results.csv',
+      'There are no leads in the current results to export.',
+    );
+  }
+
+  function exportAllSaved() {
+    exportRecords(savedLeads, 'leadscout-all-saved-leads.csv', 'There are no saved leads to export.');
+  }
+
+  function exportSelected() {
+    exportRecords(
+      selectedLeads,
+      'leadscout-selected-leads.csv',
+      'Select one or more leads from the current filtered results to export.',
+    );
+  }
+
+  function exportRecords(leads, filename, emptyMessage) {
+    if (!leads.length) {
+      setError(emptyMessage);
+      return;
+    }
+    try {
+      downloadCsv(leads, filename);
+      setError('');
+      setToast(`${leads.length} lead${leads.length === 1 ? '' : 's'} prepared for CSV export.`);
+    } catch (exportError) {
+      setError(`CSV export failed: ${exportError.message || 'Unable to create the download.'}`);
+    }
+  }
+
+  function updateFilter(key, value) {
+    setFilters((current) => ({ ...current, [key]: value }));
+    setPage(0);
+  }
+
+  function openView(saved) {
+    setOnlySaved(saved);
+    setFilter('all');
+    setFilters(EMPTY_FILTERS);
+    setPage(0);
+    setSelectedIds(new Set());
+    setSidebar(false);
+  }
+
+  return (
+    <div className="app">
+      <aside className={`sidebar ${sidebar ? 'show' : ''}`}>
+        <div className="brand">
+          <div className="brand-icon"><Target size={23} /></div>
+          <div><strong>leadscout<span>.</span></strong><small>BUSINESS INTELLIGENCE</small></div>
+        </div>
+        <div className="side-label">WORKSPACE</div>
+        <button className={`nav ${!onlySaved ? 'active' : ''}`} onClick={() => openView(false)}>
+          <LayoutDashboard size={18} /> Lead explorer
+        </button>
+        <button className={`nav ${onlySaved ? 'active' : ''}`} onClick={() => openView(true)}>
+          <Bookmark size={18} /> Saved leads
+          <span className="navcount">{savedLeads.length}</span>
+        </button>
+        <div className="sidebar-end">
+          <div className="info-box">
+            <Database size={18} />
+            <strong>Open data powered</strong>
+            <p>Search OpenStreetMap listings. No subscription or Google Maps API key needed.</p>
+          </div>
+          <div className="side-footer">LEADSCOUT · OPEN DATA</div>
+        </div>
+      </aside>
+
+      <main className="main">
+        <header className="topbar">
+          <button className="mobilemenu icon-btn" aria-label="Toggle navigation" onClick={() => setSidebar(!sidebar)}>
+            <Menu size={21} />
+          </button>
+          <div className="breadcrumb">Workspace <span>/</span> <b>{onlySaved ? 'Saved leads' : 'Lead explorer'}</b></div>
+          <div className="status"><span className="green-dot" /> Open data search</div>
+        </header>
+
+        <div className="content">
+          <div className="heading">
+            <div>
+              <div className="eyebrow"><span className="eyebrow-dot" /> PROSPECTING WORKSPACE</div>
+              <h1>Discover your next <em>client.</em></h1>
+              <p>Find local businesses, uncover website opportunities, and build a focused outreach pipeline.</p>
+            </div>
+            <div className="heading-badge"><Star size={16} /> LEAD GENERATION, SIMPLIFIED</div>
+          </div>
+
+          <section className="search-card">
+            <div className="section-line">
+              <div className="section-name">
+                <div className="section-icon"><Search size={19} /></div>
+                <div><h2>Find businesses</h2><p>Enter a niche and target location to discover public business listings.</p></div>
+              </div>
+              <span className="source-pill"><span /> OPENSTREETMAP</span>
+            </div>
+            <form className="search-form" onSubmit={search}>
+              <label className="field">
+                <span>BUSINESS NICHE</span>
+                <select value={niche} onChange={(event) => setNiche(event.target.value)}>
+                  {NICHES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+                </select>
+              </label>
+              <label className="field location-field">
+                <span>LOCATION</span>
+                <div className="input-icon"><MapPin size={17} /><input required minLength={2} maxLength={120} value={location} onChange={(event) => setLocation(event.target.value)} placeholder="City, region, country" /></div>
+              </label>
+              <label className="field short">
+                <span>RADIUS</span>
+                <select value={radius} onChange={(event) => setRadius(event.target.value)}>
+                  <option value="500">500 m</option><option value="1500">1.5 km</option><option value="3000">3 km</option><option value="5000">5 km</option><option value="10000">10 km</option><option value="15000">15 km</option>
+                </select>
+              </label>
+              <label className="field short">
+                <span>MAX LEADS</span>
+                <select value={limit} onChange={(event) => setLimit(event.target.value)}>
+                  <option value="25">25</option><option value="50">50</option><option value="100">100</option><option value="250">250</option>
+                </select>
+              </label>
+              <button className="primary search-button" disabled={loading} type="submit">
+                {loading ? <RefreshCw className="spin" size={18} /> : <Search size={18} />}
+                {loading ? 'Searching…' : 'Find leads'}
+              </button>
+            </form>
+            <div className="search-foot">
+              <span><CheckCircle2 size={14} /> Public business listings</span>
+              <span><CheckCircle2 size={14} /> No API key required</span>
+              <span><CheckCircle2 size={14} /> Save prospects to keep them</span>
+            </div>
+          </section>
+
+          {error && (
+            <div className="error" role="alert">
+              <AlertTriangle size={18} /><span>{error}</span>
+              <button aria-label="Dismiss" onClick={() => setError('')}><X size={17} /></button>
+            </div>
+          )}
+          {toast && <div className="toast" role="status">{toast}</div>}
+
+          <div className="stats">
+            <div className="stat"><div className="stat-top"><span>{onlySaved ? 'SAVED LEADS' : 'LEADS FOUND'}</span><Building2 size={19} /></div><strong>{onlySaved ? savedLeads.length : searchLeads.length}</strong><small>{onlySaved ? 'Available across searches' : 'From your latest search'}</small></div>
+            <div className="stat"><div className="stat-top"><span>NO LISTED WEBSITE</span><Globe size={19} /></div><strong>{sourceLeads.filter((lead) => !lead.website && !lead.legacy).length}</strong><small>Listing signal, not proof no site exists</small></div>
+            <div className="stat"><div className="stat-top"><span>WITH CONTACT INFO</span><MapPin size={18} /></div><strong>{sourceLeads.filter((lead) => lead.phone || lead.email).length}</strong><small>Public phone or email listed</small></div>
+            <div className="stat"><div className="stat-top"><span>SAVED LEADS</span><Bookmark size={18} /></div><strong>{savedLeads.length}</strong><small>{legacyCount ? `${legacyCount} need details restored` : 'Stored in this browser'}</small></div>
+          </div>
+
+          <section className="results">
+            <div className="result-header">
+              <div>
+                <div className="result-title"><h2>{onlySaved ? 'Saved prospects' : 'Business leads'}</h2><span>{filteredLeads.length} results</span></div>
+                <p>{onlySaved ? 'Your saved leads are stored independently of your latest search.' : data ? `Results near ${data.location} · ${new Date(data.fetchedAt).toLocaleString()}` : 'Run a search to discover real businesses in your target area.'}</p>
+              </div>
+              <div className="export-actions">
+                <button className="outline" disabled={!filteredLeads.length} onClick={exportFiltered}><Download size={16} /> Export filtered</button>
+                <button className="outline" disabled={!savedLeads.length} onClick={exportAllSaved}><Bookmark size={15} /> All saved</button>
+                <button className="outline" disabled={!selectedLeads.length} onClick={exportSelected}><CheckCircle2 size={15} /> Selected ({selectedLeads.length})</button>
+              </div>
+            </div>
+
+            {legacyCount > 0 && onlySaved && (
+              <div className="migration-notice">
+                <AlertTriangle size={16} />
+                <span>{legacyCount} older bookmark{legacyCount === 1 ? '' : 's'} only stored a source ID and status. Search the same area to restore its public details; the original status was preserved.</span>
+              </div>
+            )}
+
+            <div className="filters">
+              <div className="tabs">
+                {[
+                  ['all', 'All leads'],
+                  ['no-website', 'No website listed'],
+                  ['has-contact', 'Has contact'],
+                  ['high', 'Score 65+'],
+                ].map(([id, label]) => (
+                  <button key={id} className={filter === id ? 'selected' : ''} onClick={() => { setFilter(id); setPage(0); }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <label className="table-search"><Search size={16} /><input aria-label="Search leads" placeholder="Search leads..." value={filters.search} onChange={(event) => updateFilter('search', event.target.value)} /></label>
+            </div>
+
+            <div className="advanced-filters">
+              <div className="advanced-filter-title"><SlidersHorizontal size={16} /><strong>Filter and sort</strong></div>
+              <label>Category
+                <select value={filters.category} onChange={(event) => updateFilter('category', event.target.value)}>
+                  <option value="">All categories</option>{categories.map((category) => <option key={category}>{category}</option>)}
+                </select>
+              </label>
+              <label>City / location<input placeholder="Filter location" value={filters.location} onChange={(event) => updateFilter('location', event.target.value)} /></label>
+              <label>Website listing
+                <select value={filters.website} onChange={(event) => updateFilter('website', event.target.value)}>
+                  <option value="all">All</option><option value="listed">Listed</option><option value="not-listed">Not listed</option>
+                </select>
+              </label>
+              <label>Contact details
+                <select value={filters.contact} onChange={(event) => updateFilter('contact', event.target.value)}>
+                  <option value="all">All</option><option value="available">Phone or email listed</option><option value="missing">None listed</option>
+                </select>
+              </label>
+              <label>Outreach status
+                <select value={filters.status} onChange={(event) => updateFilter('status', event.target.value)}>
+                  <option value="all">All statuses</option>{['New', 'To Contact', 'Contacted', 'Follow-up', 'Interested', 'Not Interested', 'Closed'].map((status) => <option key={status}>{status}</option>)}
+                </select>
+              </label>
+              <label>Score from<input aria-label="Minimum score" type="number" min="0" max="100" placeholder="0" value={filters.minimumScore} onChange={(event) => updateFilter('minimumScore', event.target.value)} /></label>
+              <label>Score to<input aria-label="Maximum score" type="number" min="0" max="100" placeholder="100" value={filters.maximumScore} onChange={(event) => updateFilter('maximumScore', event.target.value)} /></label>
+              <label>Saved after<input aria-label="Saved after date" title="Applies to saved leads with a known save date" type="date" value={filters.savedAfter} onChange={(event) => updateFilter('savedAfter', event.target.value)} /></label>
+              <label>Saved before<input aria-label="Saved before date" title="Applies to saved leads with a known save date" type="date" value={filters.savedBefore} onChange={(event) => updateFilter('savedBefore', event.target.value)} /></label>
+              <label>Sort by
+                <select value={filters.sort} onChange={(event) => updateFilter('sort', event.target.value)}>
+                  <option value="score-desc">Highest opportunity score</option><option value="score-asc">Lowest opportunity score</option><option value="name">Business name</option><option value="saved-desc">Most recently saved</option>
+                </select>
+              </label>
+              <button className="clear-filters" onClick={() => { setFilters(EMPTY_FILTERS); setFilter('all'); setPage(0); }}>Clear filters</button>
+            </div>
+
+            {storageLoading ? (
+              <div className="empty" role="status"><RefreshCw className="spin" size={22} /><h3>Loading saved leads…</h3></div>
+            ) : shownLeads.length ? (
+              <LeadTable
+                leads={shownLeads}
+                savedIds={savedIds}
+                selectedIds={selectedIds}
+                onToggleSelected={toggleSelected}
+                onToggleAll={toggleAll}
+                onSave={saveLead}
+                onStatusChange={(lead, status) => changeLead(lead, { status })}
+                onNotesSave={(lead, notes) => changeLead(lead, { notes })}
+                onRemove={removeLead}
+              />
+            ) : (
+              <div className="empty">
+                <div className="empty-icon"><SlidersHorizontal size={25} /></div>
+                <h3>{onlySaved ? 'No saved leads match these filters' : data ? 'No matching leads' : 'Your lead list is waiting'}</h3>
+                <p>{onlySaved
+                  ? 'Try clearing filters, or search and save businesses to build your prospect list.'
+                  : data
+                    ? 'Try adjusting your filters, search query or location.'
+                    : 'Search for a business niche and location to populate your prospect list.'}</p>
+                {onlySaved && savedLeads.length > 0 && <button className="outline" onClick={() => { setFilters(EMPTY_FILTERS); setFilter('all'); setPage(0); }}>Clear filters</button>}
+              </div>
+            )}
+
+            <div className="table-footer">
+              <span>Showing {filteredLeads.length ? Math.min(page * 10 + 1, filteredLeads.length) : 0}–{Math.min((page + 1) * 10, filteredLeads.length)} of {filteredLeads.length}</span>
+              <div>
+                <button aria-label="Previous page" disabled={page === 0} onClick={() => setPage((current) => current - 1)}><ChevronLeft size={17} /></button>
+                <span>Page {Math.min(page + 1, pageCount)} of {pageCount}</span>
+                <button aria-label="Next page" disabled={page + 1 >= pageCount} onClick={() => setPage((current) => current + 1)}><ChevronRight size={17} /></button>
+              </div>
+            </div>
+          </section>
+
+          <div className="disclaimer">
+            <AlertTriangle size={16} />
+            <p><b>Data quality &amp; scoring:</b> OpenStreetMap records are community contributed. “No website listed” is a listing gap, not proof a business has no website. Scores add 50 points for no listed website, 10 each for no public phone or email, 5 for a missing address, and 25 only for a website explicitly verified as unavailable. No website checks are performed yet. Contact details are not independently verified. Legacy saves retain their status, but missing source details are never invented.</p>
+          </div>
+          <footer>© 2026 LeadScout · Data © OpenStreetMap contributors · <a href="https://www.openstreetmap.org/copyright" rel="noreferrer" target="_blank">ODbL attribution</a></footer>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+createRoot(document.getElementById('root')).render(<App />);
