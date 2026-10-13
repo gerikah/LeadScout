@@ -17,10 +17,11 @@ const elements = [
   { type: 'node', id: 4, lat: 14.57, lon: 121.04, tags: { name: 'Second Cafe', amenity: 'cafe', website: 'second.example' } },
 ];
 
-async function startServer(fetchImpl = async () => new Response('{}')) {
+async function startServer(fetchImpl = async () => new Response('{}'), appOptions = {}) {
   const server = createServer(createApp({
     fetchImpl,
     userAgent: 'LeadScout-test/1.0 (+https://github.com/gerikah/LeadScout)',
+    ...appOptions,
   }));
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
@@ -64,6 +65,67 @@ test('Vercel catch-all exports a working Node request handler', async (t) => {
   const response = await fetch(`http://127.0.0.1:${address.port}/api/health`);
   assert.equal(response.status, 200);
   assert.equal((await response.json()).status, 'ok');
+});
+
+test('website audit endpoint validates requests and returns explicit audit results', async (t) => {
+  const auditedUrls = [];
+  const app = await startServer(undefined, {
+    websiteAuditor: async (url) => {
+      auditedUrls.push(url);
+      return { status: 'inconclusive', availability: 'unknown', findings: [] };
+    },
+  });
+  t.after(app.close);
+
+  const missing = await fetch(`${app.url}/api/audit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  assert.equal(missing.status, 400);
+  const response = await fetch(`${app.url}/api/audit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: 'https://public.example/' }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { status: 'inconclusive', availability: 'unknown', findings: [] });
+  assert.deepEqual(auditedUrls, ['https://public.example/']);
+});
+
+test('website audit endpoint rejects private literal addresses before making requests', async (t) => {
+  const app = await startServer();
+  t.after(app.close);
+  const response = await fetch(`${app.url}/api/audit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: 'http://127.0.0.1/admin' }),
+  });
+  assert.equal(response.status, 400);
+  assert.match((await response.json()).error, /Private and local/);
+});
+
+test('website audit endpoint rate-limits repeated checks per client', async (t) => {
+  const app = await startServer(undefined, {
+    websiteAuditor: async () => ({ status: 'inconclusive', availability: 'unknown', findings: [] }),
+  });
+  t.after(app.close);
+
+  for (let request = 0; request < 5; request += 1) {
+    const response = await fetch(`${app.url}/api/audit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: 'https://public.example/' }),
+    });
+    assert.equal(response.status, 200);
+  }
+  const limited = await fetch(`${app.url}/api/audit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: 'https://public.example/' }),
+  });
+  assert.equal(limited.status, 429);
+  assert.ok(Number(limited.headers.get('retry-after')) > 0);
 });
 
 test('search validates parameters, normalizes records, deduplicates, and applies result limits', async (t) => {

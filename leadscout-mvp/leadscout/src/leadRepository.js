@@ -12,10 +12,52 @@ function normalizeStatus(status) {
   return LEAD_STATUSES.find((known) => known.toLowerCase() === status.trim().toLowerCase()) || 'New';
 }
 
+function isWebsiteAudit(audit) {
+  return isRecord(audit) &&
+    ['completed', 'inconclusive'].includes(audit.status) &&
+    ['available', 'unavailable', 'unknown'].includes(audit.availability) &&
+    typeof audit.checkedAt === 'string' &&
+    !Number.isNaN(Date.parse(audit.checkedAt)) &&
+    Array.isArray(audit.findings) &&
+    audit.findings.every((finding) => isRecord(finding) &&
+      typeof finding.code === 'string' &&
+      typeof finding.title === 'string' &&
+      typeof finding.evidence === 'string' &&
+      ['verified', 'indicator'].includes(finding.confidence)) &&
+    Array.isArray(audit.redirects) &&
+    isRecord(audit.https) &&
+    ['available', 'unavailable', 'unknown'].includes(audit.https.status) &&
+    (audit.metadata === null || (
+      isRecord(audit.metadata) &&
+      (audit.metadata.title === null || typeof audit.metadata.title === 'string') &&
+      (audit.metadata.description === null || typeof audit.metadata.description === 'string') &&
+      typeof audit.metadata.viewport === 'boolean' &&
+      typeof audit.metadata.headComplete === 'boolean' &&
+      isRecord(audit.metadata.openGraph) &&
+      isRecord(audit.metadata.headings) &&
+      ['h1', 'h2', 'h3'].every((heading) => Number.isFinite(audit.metadata.headings[heading])) &&
+      isRecord(audit.metadata.imageAlt) &&
+      Number.isFinite(audit.metadata.imageAlt.total) &&
+      Number.isFinite(audit.metadata.imageAlt.withAlt) &&
+      isRecord(audit.metadata.mobile) &&
+      typeof audit.metadata.mobile.viewport === 'boolean' &&
+      Array.isArray(audit.metadata.mobile.responsiveIndicators) &&
+      Array.isArray(audit.metadata.mobile.fixedWidthIndicators) &&
+      isRecord(audit.mobile) &&
+      typeof audit.mobile.viewport === 'boolean' &&
+      Array.isArray(audit.mobile.responsiveIndicators) &&
+      Array.isArray(audit.mobile.fixedWidthIndicators)
+    ));
+}
+
 function normalizeLead(lead) {
   if (!isRecord(lead)) return null;
   const id = getLeadId(lead);
   if (!id || typeof lead.name !== 'string' || !lead.name.trim()) return null;
+  const websiteAudit = lead.websiteAudit;
+  if (websiteAudit !== undefined && websiteAudit !== null && !isWebsiteAudit(websiteAudit)) {
+    return null;
+  }
 
   return {
     ...lead,
@@ -159,8 +201,8 @@ export function createLeadRepository(storage = globalThis.localStorage) {
     },
 
     update(id, changes) {
-      if (Object.keys(changes).some((key) => !['status', 'notes'].includes(key))) {
-        throw new Error('Only outreach status and notes can be edited.');
+      if (!isRecord(changes) || Object.keys(changes).some((key) => !['status', 'notes', 'websiteAudit'].includes(key))) {
+        throw new Error('Only outreach status, notes, and website audit results can be edited.');
       }
 
       if (changes.status !== undefined && !LEAD_STATUSES.includes(changes.status)) {
@@ -168,6 +210,9 @@ export function createLeadRepository(storage = globalThis.localStorage) {
       }
       if (changes.notes !== undefined && typeof changes.notes !== 'string') {
         throw new Error('Notes must be plain text.');
+      }
+      if (changes.websiteAudit !== undefined && changes.websiteAudit !== null && !isWebsiteAudit(changes.websiteAudit)) {
+        throw new Error('Website audit results are malformed.');
       }
 
       const state = readState();

@@ -46,6 +46,7 @@ const EMPTY_FILTERS = {
   minimumScore: '',
   maximumScore: '',
   status: 'all',
+  auditStatus: 'all',
   savedAfter: '',
   savedBefore: '',
   sort: 'score-desc',
@@ -86,6 +87,7 @@ function App() {
   const [stored, setStored] = useState({ version: 2, leads: [], legacy: {} });
   const [onlySaved, setOnlySaved] = useState(false);
   const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [auditResults, setAuditResults] = useState({});
   const [sidebar, setSidebar] = useState(false);
 
   useEffect(() => {
@@ -129,7 +131,11 @@ function App() {
     }),
     [data, stored],
   );
-  const sourceLeads = onlySaved ? savedLeads : searchLeads;
+  const sourceLeads = (onlySaved ? savedLeads : searchLeads).map((lead) => enrichLead({
+    ...lead,
+    websiteAudit: auditResults[lead.id]?.result || lead.websiteAudit,
+    auditState: auditResults[lead.id],
+  }));
   const filteredLeads = useMemo(() => {
     let results = filterAndSortLeads(sourceLeads, filters);
     if (!onlySaved) {
@@ -213,6 +219,54 @@ function App() {
     try {
       updateStored(repository.update(lead.id, changes));
       if (changes.notes !== undefined) setToast('Notes saved.');
+    } catch (storageError) {
+      setError(storageError.message);
+    }
+  }
+
+  async function auditWebsite(lead) {
+    setAuditResults((current) => ({
+      ...current,
+      [lead.id]: { loading: true, error: '', result: current[lead.id]?.result || lead.websiteAudit || null },
+    }));
+    try {
+      const response = await fetch('/api/audit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: lead.website }),
+      });
+      const result = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(result?.error || `Website audit failed (${response.status}).`);
+      if (!result || !['completed', 'inconclusive'].includes(result.status)) {
+        throw new Error('Website audit returned an invalid response.');
+      }
+
+      setAuditResults((current) => ({ ...current, [lead.id]: { result, loading: false, error: '' } }));
+      if (savedIds.has(lead.id)) changeLead(lead, { websiteAudit: result });
+      setToast(result.status === 'inconclusive'
+        ? `Audit of ${lead.name} was inconclusive; no unknown signals were scored.`
+        : `Website audit completed for ${lead.name}.`);
+    } catch (auditError) {
+      setAuditResults((current) => ({
+        ...current,
+        [lead.id]: { ...current[lead.id], loading: false, error: auditError.message || 'Website audit failed.' },
+      }));
+    }
+  }
+
+  function saveAudit(lead, websiteAudit) {
+    if (!repository) {
+      setError('Browser storage is unavailable. The audit result could not be saved.');
+      return;
+    }
+    try {
+      repository.save({
+        ...lead,
+        websiteAudit,
+        location: lead.location || data?.location || '',
+      });
+      updateStored(repository.load());
+      setToast(`Lead and website audit saved for ${lead.name}.`);
     } catch (storageError) {
       setError(storageError.message);
     }
@@ -465,13 +519,18 @@ function App() {
                   <option value="all">All statuses</option>{['New', 'To Contact', 'Contacted', 'Follow-up', 'Interested', 'Not Interested', 'Closed'].map((status) => <option key={status}>{status}</option>)}
                 </select>
               </label>
+              <label>Website audit
+                <select value={filters.auditStatus} onChange={(event) => updateFilter('auditStatus', event.target.value)}>
+                  <option value="all">All audit states</option><option value="not-audited">Not audited</option><option value="completed">Audit completed</option><option value="inconclusive">Inconclusive</option><option value="available">Website available</option><option value="unavailable">Website unavailable</option>
+                </select>
+              </label>
               <label>Score from<input aria-label="Minimum score" type="number" min="0" max="100" placeholder="0" value={filters.minimumScore} onChange={(event) => updateFilter('minimumScore', event.target.value)} /></label>
               <label>Score to<input aria-label="Maximum score" type="number" min="0" max="100" placeholder="100" value={filters.maximumScore} onChange={(event) => updateFilter('maximumScore', event.target.value)} /></label>
               <label>Saved after<input aria-label="Saved after date" title="Applies to saved leads with a known save date" type="date" value={filters.savedAfter} onChange={(event) => updateFilter('savedAfter', event.target.value)} /></label>
               <label>Saved before<input aria-label="Saved before date" title="Applies to saved leads with a known save date" type="date" value={filters.savedBefore} onChange={(event) => updateFilter('savedBefore', event.target.value)} /></label>
               <label>Sort by
                 <select value={filters.sort} onChange={(event) => updateFilter('sort', event.target.value)}>
-                  <option value="score-desc">Highest opportunity score</option><option value="score-asc">Lowest opportunity score</option><option value="name">Business name</option><option value="saved-desc">Most recently saved</option>
+                  <option value="score-desc">Highest opportunity score</option><option value="score-asc">Lowest opportunity score</option><option value="verified-opportunities">Most verified website opportunities</option><option value="name">Business name</option><option value="saved-desc">Most recently saved</option>
                 </select>
               </label>
               <button className="clear-filters" onClick={() => { setFilters(EMPTY_FILTERS); setFilter('all'); setPage(0); }}>Clear filters</button>
@@ -489,6 +548,8 @@ function App() {
                 onSave={saveLead}
                 onStatusChange={(lead, status) => changeLead(lead, { status })}
                 onNotesSave={(lead, notes) => changeLead(lead, { notes })}
+                onAudit={auditWebsite}
+                onSaveAudit={saveAudit}
                 onRemove={removeLead}
               />
             ) : (
@@ -516,7 +577,7 @@ function App() {
 
           <div className="disclaimer">
             <AlertTriangle size={16} />
-            <p><b>Data quality &amp; scoring:</b> OpenStreetMap records are community contributed. “No website listed” is a listing gap, not proof a business has no website. Scores add 50 points for no listed website, 10 each for no public phone or email, 5 for a missing address, and 25 only for a website explicitly verified as unavailable. No website checks are performed yet. Contact details are not independently verified. Legacy saves retain their status, but missing source details are never invented.</p>
+            <p><b>Data quality &amp; scoring:</b> OpenStreetMap records are community contributed. “No website listed” is a listing gap, not proof a business has no website. Listing completeness is scored separately from verified website findings; unknown or blocked audits do not affect the score. Website checks are bounded automated indicators—not a design review, mobile usability test, or guarantee of business quality. Contact details are not independently verified. Legacy saves retain their status, but missing source details are never invented.</p>
           </div>
           <footer>© 2026 LeadScout · Data © OpenStreetMap contributors · <a href="https://www.openstreetmap.org/copyright" rel="noreferrer" target="_blank">ODbL attribution</a></footer>
         </div>

@@ -28,6 +28,44 @@ function business(overrides = {}) {
   };
 }
 
+function websiteAudit(overrides = {}) {
+  return {
+    version: 1,
+    status: 'completed',
+    checkedAt: '2026-10-13T01:00:00.000Z',
+    requestedUrl: 'https://example.com/',
+    finalUrl: 'https://example.com/',
+    availability: 'available',
+    httpStatus: 200,
+    latencyMs: 140,
+    redirects: [],
+    https: { status: 'available', httpStatus: 200 },
+    metadata: {
+      title: 'Example',
+      description: 'An example',
+      viewport: true,
+      headComplete: true,
+      canonical: 'https://example.com/',
+      openGraph: { title: 'Example', description: null, image: null, url: null },
+      headings: { h1: 1, h2: 0, h3: 0 },
+      imageAlt: { total: 0, withAlt: 0, coveragePercent: null },
+      mobile: { viewport: true, responsiveIndicators: [], fixedWidthIndicators: [], scope: 'Embedded CSS only' },
+      sampled: false,
+    },
+    mobile: { viewport: true, responsiveIndicators: [], fixedWidthIndicators: [], scope: 'Embedded CSS only' },
+    findings: [{
+      code: 'missing-title',
+      severity: 'medium',
+      title: 'Page title missing',
+      evidence: 'No title element was observed.',
+      scorePoints: 5,
+      confidence: 'verified',
+    }],
+    message: '',
+    ...overrides,
+  };
+}
+
 test('saves complete leads, deduplicates by source ID, and preserves user fields', () => {
   const storage = new MemoryStorage();
   const repository = createLeadRepository(storage);
@@ -53,6 +91,27 @@ test('updates status and notes and deletes the saved lead', () => {
   assert.equal(updated.leads[0].status, 'Interested');
   assert.equal(updated.leads[0].notes, 'Requested a proposal');
   assert.equal(repository.remove(saved.id).leads.length, 0);
+});
+
+test('saves, updates, and reloads website audit history on existing v2 leads', () => {
+  const storage = new MemoryStorage();
+  const repository = createLeadRepository(storage);
+  repository.load();
+  const saved = repository.save(business());
+  const firstAudit = websiteAudit();
+  repository.update(saved.id, { websiteAudit: firstAudit });
+
+  const reloaded = createLeadRepository(storage).load();
+  assert.deepEqual(reloaded.leads[0].websiteAudit, firstAudit);
+
+  const latestAudit = websiteAudit({
+    status: 'inconclusive',
+    availability: 'unknown',
+    httpStatus: null,
+    findings: [],
+  });
+  repository.update(saved.id, { websiteAudit: latestAudit });
+  assert.deepEqual(createLeadRepository(storage).load().leads[0].websiteAudit, latestAudit);
 });
 
 test('preserves legacy IDs and statuses, restores real source data when rediscovered', () => {
@@ -113,6 +172,14 @@ test('invalid status updates and malformed storage fail without replacing stored
     legacy: {},
   }));
   assert.throws(() => repository.load(), /Duplicate saved lead records/);
+  storage.setItem(LEAD_STORAGE_KEY, JSON.stringify({
+    version: 2,
+    leads: [business({ websiteAudit: { status: 'completed' } })],
+    legacy: {},
+  }));
+  assert.throws(() => repository.load(), /record is invalid/);
+  storage.setItem(LEAD_STORAGE_KEY, JSON.stringify({ version: 2, leads: [business()], legacy: {} }));
+  assert.throws(() => repository.update('way/42', { websiteAudit: { status: 'unexpected' } }), /audit results are malformed/);
 });
 
 test('storage write failures are surfaced to the caller', () => {

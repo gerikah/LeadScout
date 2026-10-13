@@ -1,4 +1,5 @@
 import express from 'express';
+import { createAuditLimiter, createWebsiteAuditor } from './websiteAudit.js';
 
 const niches = {
   cafe: { label: 'Cafés', conditions: ['["amenity"="cafe"]'] },
@@ -158,6 +159,7 @@ function createNominatimQueue() {
 
 export function createApp({
   fetchImpl = globalThis.fetch,
+  websiteAuditor = createWebsiteAuditor(),
   userAgent = process.env.NOMINATIM_USER_AGENT ||
     `LeadScout/1.1 (+https://github.com/gerikah/LeadScout${process.env.NOMINATIM_CONTACT_EMAIL ? `; contact: ${process.env.NOMINATIM_CONTACT_EMAIL}` : ''})`,
   overpassUrl = process.env.OVERPASS_URL || 'https://overpass-api.de/api/interpreter',
@@ -166,6 +168,7 @@ export function createApp({
   const cache = createCache();
   const timedFetch = createTimedFetch(fetchImpl);
   const limitSearches = createRateLimiter();
+  const limitWebsiteAudits = createAuditLimiter();
   const waitForNominatim = createNominatimQueue();
 
   app.disable('x-powered-by');
@@ -173,6 +176,21 @@ export function createApp({
   app.use(express.json({ limit: '32kb' }));
   app.get('/api/health', (req, res) => res.json({ status: 'ok', provider: 'OpenStreetMap Overpass + Nominatim' }));
   app.get('/api/niches', (req, res) => res.json(Object.entries(niches).map(([id, value]) => ({ id, label: value.label }))));
+  app.post('/api/audit', limitWebsiteAudits, async (req, res) => {
+    const url = req.body?.url;
+    if (typeof url !== 'string') return res.status(400).json({ error: 'A website URL is required.' });
+
+    try {
+      return res.json(await websiteAuditor(url));
+    } catch (error) {
+      if (error.statusCode === 503) res.set('Retry-After', String(error.retryAfter || 10));
+      if (!error.statusCode) console.error('Website audit failed unexpectedly:', error);
+      const statusCode = error.statusCode || 500;
+      return res.status(statusCode).json({
+        error: error.statusCode ? error.message : 'Website audit failed unexpectedly.',
+      });
+    }
+  });
   app.get('/api/search', limitSearches, async (req, res) => {
     const parameters = parseSearchParameters(req.query);
     if (!parameters) return res.status(400).json({ error: 'Choose a valid niche and location.' });

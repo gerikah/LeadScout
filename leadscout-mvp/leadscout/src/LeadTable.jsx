@@ -6,9 +6,12 @@ import {
   Check,
   ExternalLink,
   Globe,
+  LoaderCircle,
   Mail,
   MapPin,
+  RotateCw,
   Phone,
+  ShieldCheck,
   Trash2,
 } from 'lucide-react';
 import { LEAD_STATUSES } from './leadData.js';
@@ -48,6 +51,75 @@ function NotesEditor({ lead, disabled, onSave }) {
   );
 }
 
+function WebsiteAudit({ lead, saved, onAudit, onSaveAudit }) {
+  const audit = lead.websiteAudit;
+  const state = lead.auditState;
+  const findings = audit?.findings || [];
+
+  return (
+    <div className="website-audit">
+      <button
+        className="audit-button"
+        disabled={state?.loading}
+        onClick={() => onAudit(lead)}
+      >
+        {state?.loading ? <LoaderCircle className="spin" size={14} /> : audit ? <RotateCw size={14} /> : <ShieldCheck size={14} />}
+        {state?.loading ? 'Checking…' : audit ? 'Re-run audit' : 'Audit website'}
+      </button>
+      {state?.error && <small className="audit-error" role="alert">{state.error}</small>}
+      {audit && (
+        <details className="audit-details">
+          <summary>
+            {audit.status === 'inconclusive' ? 'Inconclusive audit' : `${audit.availability} · HTTP ${audit.httpStatus ?? 'unknown'}`}
+          </summary>
+          <div className="audit-report">
+            <small>Last checked: {new Date(audit.checkedAt).toLocaleString()}</small>
+            <small>HTTPS: {audit.https?.status || 'unknown'}{audit.https?.httpStatus ? ` · HTTP ${audit.https.httpStatus}` : ''}</small>
+            {audit.latencyMs !== null && <small>Response time: {audit.latencyMs} ms</small>}
+            {audit.finalUrl && <small className="audit-url">Final URL: {audit.finalUrl}</small>}
+            {audit.redirects?.length > 0 && (
+              <small>Redirects: {audit.redirects.map((redirect) => `${redirect.status} → ${redirect.to}`).join(' · ')}</small>
+            )}
+            {audit.message && <small>{audit.message}</small>}
+            {audit.metadata && (
+              <>
+                <small>Title: {audit.metadata.title || 'Missing'}</small>
+                <small>Description: {audit.metadata.description || 'Missing'}</small>
+                <small>Viewport: {audit.metadata.viewport ? 'Present' : 'Missing'}</small>
+                <small>Canonical: {audit.metadata.canonical || 'Not listed'}</small>
+                <small>Open Graph: title {audit.metadata.openGraph?.title ? 'present' : 'missing'}; description {audit.metadata.openGraph?.description ? 'present' : 'missing'}; image {audit.metadata.openGraph?.image ? 'present' : 'missing'}</small>
+                <small>Headings: H1 {audit.metadata.headings.h1}, H2 {audit.metadata.headings.h2}, H3 {audit.metadata.headings.h3}</small>
+                <small>Image alt text: {audit.metadata.imageAlt.withAlt}/{audit.metadata.imageAlt.total}{audit.metadata.imageAlt.coveragePercent === null ? '' : ` (${audit.metadata.imageAlt.coveragePercent}%)`}{audit.metadata.sampled ? ' in sampled HTML' : ''}</small>
+                <small>Mobile signals: viewport {audit.mobile?.viewport ? 'present' : 'missing'}; {audit.mobile?.responsiveIndicators.length || 0} embedded responsive indicators; {audit.mobile?.fixedWidthIndicators.length || 0} fixed-width indicators. Not a usability test.</small>
+                {audit.mobile?.responsiveIndicators.map((indicator) => <small key={indicator.signal}>Responsive indicator: {indicator.evidence}</small>)}
+                {audit.mobile?.fixedWidthIndicators.map((indicator) => <small key={indicator}>Fixed-width indicator: {indicator}</small>)}
+              </>
+            )}
+            {findings.length > 0 ? (
+              <ul>
+                {findings.map((finding, index) => (
+                  <li key={`${finding.code}-${index}`}>
+                    <b>{finding.title}</b>: {finding.evidence}
+                    {finding.confidence === 'indicator' && <em> · indicator only</em>}
+                  </li>
+                ))}
+              </ul>
+            ) : audit.status === 'completed' ? (
+              <small>No measurable improvement findings from this check.</small>
+            ) : null}
+            {audit.mobile?.scope && <small>{audit.mobile.scope}</small>}
+            {!saved && (
+              <button className="save-audit" onClick={() => onSaveAudit(lead, audit)}>
+                Save lead and audit results
+              </button>
+            )}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
 export function LeadTable({
   leads,
   savedIds,
@@ -57,6 +129,8 @@ export function LeadTable({
   onSave,
   onStatusChange,
   onNotesSave,
+  onAudit,
+  onSaveAudit,
   onRemove,
 }) {
   const allSelected = leads.length > 0 && leads.every((lead) => selectedIds.has(lead.id));
@@ -134,13 +208,23 @@ export function LeadTable({
                   )}
                 </td>
                 <td>
-                  {lead.website ? (
-                    <a className="website-link" href={lead.website} rel="noopener noreferrer" target="_blank">
-                      <Globe size={14} /> Visit <ExternalLink size={11} />
-                    </a>
-                  ) : (
-                    <span className="no-website"><Globe size={14} /> {lead.legacy ? 'Unknown' : 'Not listed'}</span>
-                  )}
+                  <div className="website-cell">
+                    {lead.website ? (
+                      <>
+                        <a className="website-link" href={lead.website} rel="noopener noreferrer" target="_blank">
+                          <Globe size={14} /> Visit <ExternalLink size={11} />
+                        </a>
+                        <WebsiteAudit
+                          lead={lead}
+                          saved={saved}
+                          onAudit={onAudit}
+                          onSaveAudit={onSaveAudit}
+                        />
+                      </>
+                    ) : (
+                      <span className="no-website"><Globe size={14} /> {lead.legacy ? 'Unknown' : 'Not listed'}</span>
+                    )}
+                  </div>
                 </td>
                 <td>
                   {lead.score === null || lead.score === undefined ? (
@@ -151,10 +235,12 @@ export function LeadTable({
                         <span className={`score-dot ${lead.score >= 65 ? 'hot' : ''}`} />
                         <strong>{lead.score}</strong><small>/ 100</small>
                       </div>
+                      <small className="score-categories">Listing {lead.listingScore} · Website {lead.websiteScore}</small>
+                      <small className="score-categories">Combined score is capped at 100.</small>
                       <details className="score-breakdown">
                         <summary>Why this score?</summary>
                         {lead.scoreFactors.length
-                          ? <ul>{lead.scoreFactors.map((factor) => <li key={factor.label}>{factor.label} <b>+{factor.points}</b></li>)}</ul>
+                          ? <ul>{lead.scoreFactors.map((factor) => <li key={factor.label}><span>{factor.group === 'website' ? 'Website' : 'Listing'}: {factor.label}</span> <b>+{factor.points}</b></li>)}</ul>
                           : <span>No opportunity factors found.</span>}
                       </details>
                       <small className="score-note">{lead.opportunity}</small>

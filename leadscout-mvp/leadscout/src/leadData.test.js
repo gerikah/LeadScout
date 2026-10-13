@@ -70,6 +70,40 @@ test('scoring is deterministic and explains each applied factor', () => {
   assert.equal(enrichLead({ id: 'node/1', name: 'A' }).contactVerification, CONTACT_VERIFICATION);
 });
 
+test('verified website findings affect quality score while unknown audits do not', () => {
+  const completeBusiness = {
+    website: 'https://example.com',
+    phone: '123',
+    email: 'a@example.com',
+    address: '1 Main St',
+  };
+  const unknown = scoreLead({
+    ...completeBusiness,
+    websiteAudit: { status: 'inconclusive', availability: 'unknown', findings: [] },
+  });
+  assert.equal(unknown.score, 0);
+  assert.equal(unknown.websiteScore, 0);
+
+  const audited = scoreLead({
+    ...completeBusiness,
+    websiteAudit: {
+      status: 'completed',
+      availability: 'unavailable',
+      https: { status: 'unavailable' },
+      findings: [
+        { code: 'website-unavailable', confidence: 'verified' },
+        { code: 'missing-title', confidence: 'verified' },
+        { code: 'fixed-width-indicator', confidence: 'indicator' },
+        { code: 'imaginary-finding', confidence: 'verified' },
+      ],
+    },
+  });
+  assert.equal(audited.listingScore, 0);
+  assert.equal(audited.websiteScore, 33);
+  assert.equal(audited.score, 33);
+  assert.ok(audited.factors.every((factor) => factor.group === 'website'));
+});
+
 test('filters category, location, website, contacts, score, status and saved date', () => {
   assert.equal(filterAndSortLeads(scoredLeads, { minimumScore: '', maximumScore: '' }).length, 3);
   const all = filterAndSortLeads(scoredLeads, {});
@@ -81,12 +115,22 @@ test('filters category, location, website, contacts, score, status and saved dat
   assert.deepEqual(filterAndSortLeads(scoredLeads, { minimumScore: 70 }).map((lead) => lead.id), ['node/3']);
   assert.deepEqual(filterAndSortLeads(scoredLeads, { status: 'Contacted' }).map((lead) => lead.id), ['way/2']);
   assert.deepEqual(filterAndSortLeads(scoredLeads, { savedAfter: '2026-10-02' }).map((lead) => lead.id), ['node/3', 'way/2']);
+  assert.deepEqual(filterAndSortLeads(scoredLeads, { auditStatus: 'not-audited' }).map((lead) => lead.id), ['node/3', 'node/1', 'way/2']);
 });
 
 test('sorting supports score, name and most recently saved', () => {
   assert.deepEqual(filterAndSortLeads(scoredLeads, { sort: 'score-asc' }).map((lead) => lead.id), ['way/2', 'node/1', 'node/3']);
   assert.deepEqual(filterAndSortLeads(scoredLeads, { sort: 'name' }).map((lead) => lead.id), ['way/2', 'node/3', 'node/1']);
   assert.deepEqual(filterAndSortLeads(scoredLeads, { sort: 'saved-desc' }).map((lead) => lead.id), ['node/3', 'way/2', 'node/1']);
+  const withAudit = scoredLeads.map((lead, index) => ({
+    ...lead,
+    websiteAudit: index === 1 ? {
+      status: 'completed',
+      availability: 'available',
+      findings: [{ code: 'missing-title', confidence: 'verified' }],
+    } : undefined,
+  }));
+  assert.equal(filterAndSortLeads(withAudit, { sort: 'verified-opportunities' })[0].id, 'way/2');
 });
 
 test('CSV export quotes special characters, preserves Unicode and escapes formulas', () => {
@@ -105,4 +149,33 @@ test('CSV export quotes special characters, preserves Unicode and escapes formul
   assert.ok(csv.includes('"Unit ""A"", Main St\r\nMakati"'));
   assert.ok(csv.includes('"Café lead, needs follow-up"'));
   assert.ok(csv.includes('"https://www.openstreetmap.org/node/1"'));
+});
+
+test('CSV includes supported saved audit metadata and findings', () => {
+  const csv = exportLeadsToCsv([{
+    ...scoredLeads[0],
+    websiteAudit: {
+      status: 'completed',
+      availability: 'available',
+      httpStatus: 200,
+      checkedAt: '2026-10-13T01:00:00.000Z',
+      https: { status: 'available' },
+      findings: [{ title: 'Missing title', evidence: 'No title in the HTML head.' }],
+      metadata: {
+        title: null,
+        description: 'A local cafe',
+        viewport: false,
+        canonical: null,
+      },
+      mobile: {
+        viewport: false,
+        responsiveIndicators: [],
+        fixedWidthIndicators: ['1200px fixed width in embedded CSS'],
+      },
+    },
+  }]);
+  assert.ok(csv.includes('"completed","available","200","available","2026-10-13T01:00:00.000Z"'));
+  assert.ok(csv.includes('"Missing title: No title in the HTML head."'));
+  assert.ok(csv.includes('"title=missing; description=A local cafe; viewport=missing; canonical="'));
+  assert.ok(csv.includes('fixed-width=1200px fixed width in embedded CSS'));
 });
